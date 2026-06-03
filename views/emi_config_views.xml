@@ -1,0 +1,29 @@
+<odoo>
+    <record id="view_emi_config_form" model="ir.ui.view">
+        <field name="name">emi.config.form</field>
+        <field name="model">emi.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="server_url"/>
+                        <field name="model_name"/>
+                        <field name="system_prompt"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+        <record id="action_emi_config" model="ir.actions.act_window">
+        <field name="name">Cấu hình Emi</field>
+        <field name="res_model">emi.config</field>
+        <field name="view_mode">form</field>
+    </record>
+
+    <!-- Menu root -->
+    <menuitem id="menu_emi_root" name="Emi AI" sequence="10" web_icon="base.menu_base_config"/>
+    <!-- Menu con Cài đặt -->
+    <menuitem id="menu_emi_config" name="Cài đặt" parent="menu_emi_root" action="action_emi_config" sequence="10"/>
+</odoo>

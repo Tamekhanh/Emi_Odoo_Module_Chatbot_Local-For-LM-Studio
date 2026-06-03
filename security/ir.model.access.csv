@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_emi_config,emi.config,model_emi_config,base.group_user,1,1,1,1
+access_emi_chat,emi.chat,model_emi_chat,base.group_user,1,1,1,1
