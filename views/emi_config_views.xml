@@ -4,6 +4,13 @@
         <field name="model">emi.config</field>
         <field name="arch" type="xml">
             <form>
+                <header>
+                    <!-- NÚT BẤM MỚI Ở ĐÂY -->
+                    <button name="action_sync_vector_db" 
+                            string="🔄 Đồng bộ tri thức vào AI" 
+                            type="object" 
+                            class="oe_highlight"/>
+                </header>
                 <sheet>
                     <group>
                         <field name="name"/>

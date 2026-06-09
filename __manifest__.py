@@ -2,8 +2,8 @@
     'name': 'Emi AI Chatbot (LM Studio) - Beta',
     'version': '1.0',
     'category': 'AI',
-    'summary': 'Trợ lý ảo Emi chạy local qua LM Studio',
-    'description': 'Module tích hợp LLM local vào Odoo sử dụng chuẩn OpenAI API của LM Studio',
+    'summary': 'AI assistant chatbot using local LLM with OpenAI API standard for Odoo',
+    'description': 'Module Odoo AI assistant chatbot using local LLM with OpenAI API standard for Odoo',
     'depends': ['base'],
     'data': [
         'security/ir.model.access.csv',
