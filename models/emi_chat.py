@@ -66,11 +66,12 @@ class EmiChat(models.Model):
 
             # --- BƯỚC 2: XÂY DỰNG PROMPT ---
             rag_system_prompt = f"""
-            You are a simple text-based assistant. 
-            IMPORTANT: Do not attempt to use any tools or call any functions. 
-            Just provide a direct text answer based ONLY on the provided context.
-            
-            If the answer is not in the context, say "I don't know".
+            You are a strict factual assistant. 
+            Your ONLY job is to rewrite the provided context into a natural answer.
+            DO NOT create a plan. 
+            DO NOT search for IDs. 
+            DO NOT use any internal tools.
+            If the answer is not in the context, simply say "I don't know".
             
             --- CONTEXT ---
             {context_text}
