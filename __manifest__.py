@@ -10,7 +10,7 @@
         'views/emi_config_views.xml',
         'views/emi_chat_views.xml',
     ],
-    'authors': 'Tamek',
+    'author': 'Tamek',
     'installable': True,
     'application': True,
     'license': 'LGPL-3',
