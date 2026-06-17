@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="emi_ai_chatbot.EmiChat" owl="1">
+        <div class="emi-chat-container">
+            <div class="emi-chat-header">
+                <h3>🤖 Emi AI Assistant</h3>
+            </div>
+            
+            <div class="emi-chat-body" t-ref="chatBody">
+                <t t-foreach="state.messages" t-as="msg" t-key="msg.id">
+                    <div t-attf-class="chat-bubble-wrapper {{msg.is_user ? 'user-align' : 'ai-align'}}">
+                        <div t-attf-class="chat-bubble {{msg.is_user ? 'user-bubble' : 'ai-bubble'}}">
+                            <t t-esc="msg.message"/>
+                        </div>
+                    </div>
+                </t>
+            </div>
+
+            <div class="emi-chat-footer">
+                <input type="text" t-model="state.userInput" 
+                       t-on-keydown="onKeyDown" 
+                       placeholder="Nhập câu hỏi cho Emi..."/>
+                <button class="btn btn-primary" t-on-click="sendMessage">Gửi</button>
+            </div>
+        </div>
+    </t>
+</templates>

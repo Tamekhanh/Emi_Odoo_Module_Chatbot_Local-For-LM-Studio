@@ -19,3 +19,6 @@ openai
 
 # --- Environment & Utilities ---
 python-dotenv
+
+# --- Optional: For Building a Simple UI ---
+streamlit

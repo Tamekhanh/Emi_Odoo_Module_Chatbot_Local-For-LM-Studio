@@ -1,0 +1,88 @@
+.emi-chat-container {
+    display: flex;
+    flex-direction: column;
+    // Thay 100vh bằng 100% để nó nằm gọn trong khung Odoo
+    height: 100%; 
+    max-height: 100%;
+    background-color: #f5f7fb;
+    overflow: hidden; // Ngăn container tổng bị cuộn, chỉ cho phép body cuộn
+}
+
+.emi-chat-header {
+    background: #714B67; 
+    color: white;
+    padding: 15px;
+    text-align: center;
+    flex-shrink: 0; // Không cho phép header bị co lại
+}
+
+.emi-chat-body {
+    flex: 1; // Chiếm toàn bộ không gian còn lại
+    overflow-y: auto; // Chỉ cho phép cuộn trong vùng này
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background-color: #f5f7fb;
+}
+
+.chat-bubble-wrapper {
+    display: flex;
+    width: 100%;
+    margin-bottom: 10px;
+
+    &.user-align { justify-content: flex-end; }
+    &.ai-align { justify-content: flex-start; }
+}
+
+.chat-bubble {
+    max-width: 70%;
+    padding: 10px 15px;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.4;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+
+    &.user-bubble {
+        background-color: #007bff;
+        color: white;
+        border-bottom-right-radius: 2px;
+    }
+
+    &.ai-bubble {
+        background-color: #ffffff;
+        color: #333;
+        border-bottom-left-radius: 2px;
+        border: 1px solid #ddd;
+    }
+}
+
+.emi-chat-footer {
+    padding: 15px 20px;
+    background: white;
+    display: flex;
+    gap: 10px;
+    border-top: 1px solid #ddd;
+    flex-shrink: 0; // Cố định footer, không cho co lại
+    
+    // Đảm bảo footer luôn nằm trên cùng của các thành phần khác nếu cần
+    z-index: 10;
+
+    input {
+        flex: 1;
+        padding: 10px 15px;
+        border: 1px solid #ccc;
+        border-radius: 20px;
+        outline: none;
+        font-size: 14px;
+
+        &:focus {
+            border-color: #714B67;
+        }
+    }
+
+    button {
+        border-radius: 20px;
+        padding: 0 20px;
+    }
+}

@@ -10,6 +10,13 @@
         'views/emi_config_views.xml',
         'views/emi_chat_views.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'emi_chatbot/static/src/emi_chat.scss',
+            'emi_chatbot/static/src/emi_chat.xml',
+            'emi_chatbot/static/src/emi_chat.js',
+        ],
+    },
     'author': 'Tamek',
     'installable': True,
     'application': True,

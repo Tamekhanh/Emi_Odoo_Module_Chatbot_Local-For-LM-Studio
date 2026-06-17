@@ -25,6 +25,12 @@ class EmiConfig(models.Model):
         string="Emi personality (System Prompt)", 
         default="You are Emi, an AI assistant integrated into Odoo. You help users with their questions and tasks related to Odoo. Always be polite and helpful." \
         "You have to answer if it in the context of Odoo, if not, you can answer but should mention that you are not sure because it's outside of your knowledge domain." \
+        "If the user greets you, respond with a greeting as well."
+    )
+    temperature = fields.Float(
+        default=0.3, 
+        string="Response Creativity (Temperature)", 
+        help="Higher values (e.g., 0.8) make the output more creative, while lower values (e.g., 0.2) make it more focused and deterministic."
     )
     def action_sync_vector_db(self):
         """Hàm này lấy data thẳng từ DB Odoo và nạp vào ChromaDB"""

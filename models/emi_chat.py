@@ -2,25 +2,19 @@ from odoo import models, fields, api
 from odoo.exceptions import UserError
 import openai
 import os
-
-# Import thư viện Vector DB
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-# --- KHỞI TẠO TOÀN CỤC (Global Initialization) ---
-# Việc khởi tạo ở đây giúp model được load vào RAM một lần duy nhất khi server start, 
-# không load lại mỗi khi nhấn nút chat -> Tránh sập Server (Memory Limit)
+# --- KHỞI TẠO TOÀN CỤC ---
 try:
     print("🤖 Loading AI Embedding Model into memory...")
     EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     PERSIST_DIRECTORY = "D:/BT/2533_Knowledge_Management_System/Odoo/odoo/chroma_db"
-    # Khởi tạo Chroma một lần duy nhất
     VECTOR_DB = Chroma(
         persist_directory=PERSIST_DIRECTORY, 
         embedding_function=EMBEDDING_MODEL,
         collection_name="kms_collection")
-    print("✅ AI Model and Vector DB loaded successfully!",
-          )
+    print("✅ AI Model and Vector DB loaded successfully!")
 except Exception as e:
     print(f"❌ Critical Error loading AI Model: {e}")
     EMBEDDING_MODEL = None
@@ -44,40 +38,71 @@ class EmiChat(models.Model):
             return 'it_staff'
         return 'public'
 
-    def action_ask_emi(self):
+    # --- API CHO JS CALL ---
+    @api.model
+    def get_chat_history(self, user_id=None): # Thêm =None để không bị lỗi missing argument
+        # Nếu JS không gửi user_id, tự lấy từ session
+        current_user_id = user_id or self.env.user.id
+        chats = self.search([('user_id', '=', current_user_id)], order='create_date asc')
+        return [{
+            'id': c.id,
+            'message': c.message if c.is_user else c.response,
+            'is_user': c.is_user,
+        } for c in chats]
+
+    @api.model
+    def chat_with_emi(self, message=None, user_id=None): # Thêm =None cho cả hai
+        # Kiểm tra nếu không có message thì báo lỗi
+        if not message:
+            return "Lỗi: Không nhận được nội dung tin nhắn."
+
+        current_user_id = user_id or self.env.user.id
+
+        # 1. Lưu tin nhắn người dùng
+        self.create({
+            'user_id': current_user_id,
+            'message': message,
+            'is_user': True,
+        })
+        
+        # 2. Gọi logic AI xử lý
+        ai_response = self._get_ai_response(message) 
+
+        # 3. Lưu câu trả lời của AI
+        self.create({
+            'user_id': current_user_id,
+            'message': ai_response,
+            'response': ai_response,
+            'is_user': False,
+        })
+        return ai_response
+
+    def _get_ai_response(self, message):
+        """ Logic cốt lõi xử lý RAG và LLM """
         if VECTOR_DB is None:
-            raise UserError("AI Engine is not loaded. Please restart Odoo server.")
+            return "AI Engine is not loaded. Please restart Odoo server."
 
         config = self.env['emi.config'].search([], limit=1)
         if not config:
-            raise UserError("Please create Emi configuration in the settings menu first!")
-
-        if not self.message:
-            raise UserError("Please enter a message!")
+            return "Please create Emi configuration in the settings menu first!"
 
         try:
-            # --- BƯỚC 1: TRUY XUẤT TRI THỨC (Sử dụng đối tượng GLOBAL) ---
+            # BƯỚC 1: TRUY XUẤT TRI THỨC
             user_role = self._get_user_access_role()
             security_filter = {"$or": [{"access_role": user_role}, {"access_role": "public"}]}
-            
-            # Tìm kiếm trực tiếp từ VECTOR_DB đã load sẵn trong RAM
-            docs = VECTOR_DB.similarity_search(self.message, k=3, filter=security_filter)
+            docs = VECTOR_DB.similarity_search(message, k=3, filter=security_filter)
             context_text = "\n\n".join([doc.page_content for doc in docs]) if docs else "No specific SOP found."
 
-            # --- BƯỚC 2: XÂY DỰNG PROMPT ---
+            # BƯỚC 2: XÂY DỰNG PROMPT
             rag_system_prompt = f"""
             You are a strict factual assistant. 
             Your ONLY job is to rewrite the provided context into a natural answer.
-            DO NOT create a plan. 
-            DO NOT search for IDs. 
-            DO NOT use any internal tools.
-            If the answer is not in the context, simply say "I don't know".
-            
+            If the answer is not in the context, simply say "I don't know", If it Greetings, respond appropriately.
             --- CONTEXT ---
             {context_text}
             ----------------
             """
-
+            # Lấy 10 tin nhắn gần nhất của user này để làm memory
             history = self.search([('user_id', '=', self.env.user.id)], limit=10)
             messages = [{"role": "system", "content": rag_system_prompt}]
             for chat in history:
@@ -85,32 +110,24 @@ class EmiChat(models.Model):
                 content = chat.message if chat.is_user else chat.response
                 messages.append({"role": role, "content": content})
 
-            messages.append({"role": "user", "content": self.message})
+            messages.append({"role": "user", "content": message})
 
-            # --- BƯỚC 3: GỬI CHO LM STUDIO ---
+            # BƯỚC 3: GỬI CHO LM STUDIO
             client = openai.OpenAI(base_url=config.server_url, api_key="lm-studio")
-
             response = client.chat.completions.create(
                 model=config.model_name,
                 messages=messages,
-                temperature=0.1, # Giảm cực thấp để AI bám sát văn bản, không "tự chế" kế hoạch
-                # Thêm dòng dưới đây nếu model của bạn hỗ trợ (để tắt tool use)
-                # tools=[], 
-                # tool_choice="none",
+                temperature=config.temperature,
             )
-
-            ai_text = response.choices[0].message.content
-
-            # --- BƯỚC 4: LƯU LỊCH SỬ ---
-            self.env['emi.chat'].create({
-                'user_id': self.env.user.id,
-                'message': ai_text,
-                'response': ai_text,
-                'is_user': False
-            })
-
-            self.response = ai_text
-            return True
+            return response.choices[0].message.content
 
         except Exception as e:
-            raise UserError(f"Emi Error: {str(e)}")
+            return f"Emi Error: {str(e)}"
+
+    # Giữ lại hàm cũ nếu bạn vẫn dùng Form View
+    def action_ask_emi(self):
+        res = self._get_ai_response(self.message)
+        self.response = res
+        # Tạo bản ghi AI để lưu lịch sử
+        self.create({'user_id': self.env.user.id, 'message': res, 'response': res, 'is_user': False})
+        return True
