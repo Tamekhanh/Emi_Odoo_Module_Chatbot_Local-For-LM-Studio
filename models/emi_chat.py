@@ -32,10 +32,27 @@ class EmiChat(models.Model):
 
     def _get_user_access_role(self):
         user = self.env.user
+        
+        try:
+            # Tìm tất cả các group có chứa user này
+            groups = self.env['res.groups'].search([('users', 'in', [user.id])])
+            # Lấy ra danh sách External ID (xml_id) của các group đó
+            all_user_groups = groups.mapped('xml_id') 
+            print(f"\n🔍 DEBUG X-RAY: User {user.name} (ID: {user.id}) has these groups: {all_user_groups}")
+        except Exception as e:
+            print(f"❌ Debug X-Ray Error: {e}")
+
+
+        # 1. Ưu tiên cao nhất: Admin (có quyền Settings) -> Xem được hết
         if user.has_group('base.group_system'):
+            return 'admin' # Bạn nhớ sửa logic filter cho admin như tôi hướng dẫn ở câu trước nhé
+        # 2. HR Manager
+        # Kiểm tra nếu trong danh sách tên group có chữ 'HR' (Viết hoa chính xác như trong Odoo)
+        if user.has_group(77): 
             return 'hr_manager'
-        elif 'it' in user.name.lower():
+        if user.has_group(80): # Thay 80 bằng ID thực tế của group IT
             return 'it_staff'
+
         return 'public'
 
     # --- API CHO JS CALL ---
@@ -87,21 +104,33 @@ class EmiChat(models.Model):
             return "Please create Emi configuration in the settings menu first!"
 
         try:
-            # BƯỚC 1: TRUY XUẤT TRI THỨC
+            # --- BƯỚC 1: TRUY XUẤT TRI THỨC ---
             user_role = self._get_user_access_role()
-            security_filter = {"$or": [{"access_role": user_role}, {"access_role": "public"}]}
-            docs = VECTOR_DB.similarity_search(message, k=3, filter=security_filter)
+            print(f"DEBUG: User {self.env.user.name} (ID: {self.env.user.id}) has role: {user_role}")
+            # FIX LỖI ADMIN Ở ĐÂY:
+            if user_role == 'admin':
+                # Admin không dùng filter -> Lấy tất cả mọi thứ trong DB
+                security_filter = None 
+            else:
+                # Các role khác chỉ được xem role của mình và public
+                security_filter = {"$or": [{"access_role": user_role}, {"access_role": "public"}]}
+            
+            # Truy vấn với filter (nếu filter là None, ChromaDB sẽ lấy toàn bộ)
+            docs = VECTOR_DB.similarity_search(message, k=5, filter=security_filter)
             context_text = "\n\n".join([doc.page_content for doc in docs]) if docs else "No specific SOP found."
 
-            # BƯỚC 2: XÂY DỰNG PROMPT
+            # --- BƯỚC 2: XÂY DỰNG PROMPT ---
             rag_system_prompt = f"""
             You are a strict factual assistant. 
             Your ONLY job is to rewrite the provided context into a natural answer.
-            If the answer is not in the context, simply say "I don't know", If it Greetings, respond appropriately.
+            If the answer is not in the context, simply say "I don't know". 
+            If the user provides a greeting (e.g., Hello, Hi), respond politely and ask how you can help.
+            
             --- CONTEXT ---
             {context_text}
             ----------------
             """
+            
             # Lấy 10 tin nhắn gần nhất của user này để làm memory
             history = self.search([('user_id', '=', self.env.user.id)], limit=10)
             messages = [{"role": "system", "content": rag_system_prompt}]
@@ -112,7 +141,7 @@ class EmiChat(models.Model):
 
             messages.append({"role": "user", "content": message})
 
-            # BƯỚC 3: GỬI CHO LM STUDIO
+            # --- BƯỚC 3: GỬI CHO LM STUDIO ---
             client = openai.OpenAI(base_url=config.server_url, api_key="lm-studio")
             response = client.chat.completions.create(
                 model=config.model_name,
@@ -129,5 +158,8 @@ class EmiChat(models.Model):
         res = self._get_ai_response(self.message)
         self.response = res
         # Tạo bản ghi AI để lưu lịch sử
+        user_role = self._get_user_access_role()
+        print(f"DEBUG: User {self.env.user.name} is identified as role: {user_role}") 
+        
         self.create({'user_id': self.env.user.id, 'message': res, 'response': res, 'is_user': False})
         return True

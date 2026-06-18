@@ -37,6 +37,7 @@ class RAGEngine:
         Answer the question based ONLY on the provided context. 
         If the answer is not in the context, say "I don't know".
         Do not hallucinate or use external knowledge.
+        If the user greets you, respond with a greeting as well.
         
         CONTEXT:
         {context}
