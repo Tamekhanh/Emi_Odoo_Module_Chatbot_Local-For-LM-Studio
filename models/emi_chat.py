@@ -48,6 +48,15 @@ class EmiChat(models.Model):
                 unique_sessions[sid] = s['create_date']
         
         return [{'session_id': sid, 'date': date} for sid, date in unique_sessions.items()]
+    
+    @api.model
+    def clear_chat_history(self, user_id=None):
+        current_user_id = user_id or self.env.user.id
+        # Tìm tất cả tin nhắn của user hiện tại
+        chats = self.search([('user_id', '=', current_user_id)])
+        # Xóa toàn bộ
+        chats.unlink()
+        return True
 
     # --- UPDATED API: Get history for a specific Session ---
     @api.model
@@ -93,22 +102,37 @@ class EmiChat(models.Model):
             'response': ai_response,
             'is_user': False,
         })
-        return ai_response, current_session # Return session_id for JS to save locally
+        return {
+        'response': ai_response, 
+        'session_id': current_session
+        }
     
     def _get_user_access_role(self):
         user = self.env.user
-        
-        if user.has_group('base.group_system'):
-            return 'admin' 
-            
-        # Móc thẳng vào mảng groups_id.ids của user
-        if 77 in user.groups_id.ids: 
-            return 'hr_manager'
-            
-        if 78 in user.groups_id.ids: 
-            return 'it_staff'
+        user_id = user.id
+        roles = [] # Thay vì return ngay, ta bỏ tất cả quyền vào một list
 
-        return 'public'
+        try:
+            # 1. Kiểm tra Admin
+            if user.has_group('base.group_system'):
+                return 'admin' # Admin vẫn trả về string 'admin' để ưu tiên cao nhất
+            
+            # 2. Kiểm tra HR (Không dùng elif, dùng if để check tất cả)
+            if user.has_group(77):
+                roles.append('hr_manager')
+                
+            # 3. Kiểm tra IT
+            if user.has_group(78): # Thay bằng XML ID nhóm IT của bạn
+                roles.append('it_staff')
+
+        except Exception as e:
+            print(f"❌ Error in role detection: {str(e)}")
+
+        # Nếu không có quyền đặc biệt nào, mặc định là public
+        if not roles:
+            return ['public']
+            
+        return roles # Trả về danh sách: ví dụ ['hr_manager', 'it_staff']
     
 
     # TOOL FUNCTION: Get product info directly from DB (Bypass RAG)
@@ -130,28 +154,47 @@ class EmiChat(models.Model):
         return "Product data directly from DB:\n" + "\n".join(result)
     
     # TOOL FUNCTION: Get employee salary info directly from DB (Bypass RAG)
-    def _tool_get_salary_info(self):
-        """Tool to get salary information for the current user and subordinates (if authorized)"""
-        if 'hr.contract' not in self.env:
-            return "The system does not have the HR Contract module (hr_contract) installed."
+    def _tool_get_salary_info(self, message=""):
+        """Lấy thông tin lương: Ưu tiên lương của chính người dùng hiện tại"""
+        try:
+            # 1. Xác định nhân viên liên kết với User hiện tại
+            current_user = self.env.user
+            # Tìm nhân viên có user_id khớp với user đang đăng nhập
+            my_employee = self.env['hr.employee'].search([('user_id', '=', current_user.id)], limit=1)
 
-        employees = self.env['hr.employee'].search([]) 
-        
-        if not employees:
-            return "You do not have permission to view HR/salary information or there is no data."
-            
-        result = []
-        for emp in employees:
-            # Find the currently active ('open') contract of the employee
-            contract = self.env['hr.contract'].search([
-                ('employee_id', '=', emp.id),
-                ('state', '=', 'open')
-            ], limit=1)
-            
-            wage = contract.wage if contract else "No active contract"
-            result.append(f"- Employee {emp.name}: Salary {wage}")
-            
-        return "Salary data directly from the system:\n" + "\n".join(result)
+            # 2. Kiểm tra nếu người dùng hỏi về "lương của tôi" (my salary / lương của tôi)
+            if "my" in message.lower() or "tôi" in message.lower() or "mình" in message.lower():
+                if my_employee:
+                    # Lấy lương linh hoạt (như đã hướng dẫn ở bước trước)
+                    wage = "Không có dữ liệu lương"
+                    if hasattr(my_employee, 'wage') and my_employee.wage:
+                        wage = my_employee.wage
+                    elif hasattr(my_employee, 'contract_id') and my_employee.contract_id and hasattr(my_employee.contract_id, 'wage'):
+                        wage = my_employee.contract_id.wage
+                    
+                    return f"Your current salary is: {wage} VND."
+                else:
+                    return "I found your user account, but you are not linked to any Employee record in the system. Please contact HR."
+
+            # 3. Nếu không phải hỏi về bản thân, mà là hỏi chung (chỉ dành cho Manager/Admin)
+            # Kiểm tra quyền trước khi cho xem lương người khác
+            user_role = self._get_user_access_role()
+            if user_role not in ['admin', 'hr_manager']:
+                return "You do not have permission to view other employees' salaries."
+
+            # Lấy danh sách lương cho Manager
+            employees = self.env['hr.employee'].search([])
+            result = []
+            for emp in employees:
+                wage = "No data"
+                if hasattr(emp, 'wage') and emp.wage: wage = emp.wage
+                elif hasattr(emp, 'contract_id') and emp.contract_id and hasattr(emp.contract_id, 'wage'): wage = emp.contract_id.wage
+                result.append(f"- {emp.name}: {wage}")
+                
+            return "Salary list for all employees:\n" + "\n".join(result)
+
+        except Exception as e:
+            return f"Error retrieving salary info: {str(e)}"
 
     def _call_llm_for_intent(self, prompt, config):
         """
@@ -248,80 +291,84 @@ class EmiChat(models.Model):
         try:
             # --- STEP 1: INTENT ROUTING ---
             router_prompt = f"""
-            Classify the following user question into one of 3 categories: 'PRODUCT', 'SALARY', or 'GENERAL'.
-            - Choose 'PRODUCT' if asking about product info, price, or inventory.
-            - Choose 'SALARY' if asking about salary, bonus, or HR.
-            - Choose 'GENERAL' if it's about processes, regulations, general guides, or greetings.
-            Return ONLY 1 word.
-            Question: "{message}"
-            """
-            
-            # CALL API TO GET INTENT 
+                Classify the user question into: 'PRODUCT', 'SALARY', or 'GENERAL'.
+                - 'PRODUCT': ONLY if the user is asking for a specific item's price, stock, or specs (e.g., "What is the price of LiDAR?").
+                - 'SALARY': ONLY if asking about wages, bonuses, or HR contracts.
+                - 'GENERAL': If the question is about a PROCESS, a GUIDE, a PROCEDURE, a SOP, or a general knowledge article (e.g., "How to...", "Procedures for...", "Ensuring...").
+                Return ONLY 1 word.
+                Question: "{message}"
+                """
             intent = self._call_llm_for_intent(router_prompt, config) 
 
-            # --- STEP 2: RETRIEVE DATA BASED ON INTENT ---
+            # --- STEP 2: RETRIEVE DATA ---
             dynamic_context = ""
 
             if "PRODUCT" in intent:
-                # Extract product name instead of passing the whole message
                 product_keyword = self._extract_keyword(message, config)
-                print(f"DEBUG: Product name extracted by AI: '{product_keyword}'")
-                
-                # Call Tool with the cleaned product name
                 dynamic_context = self._tool_get_product_info(product_name=product_keyword)
                 
             elif "SALARY" in intent:
-                dynamic_context = self._tool_get_salary_info()
+                dynamic_context = self._tool_get_salary_info(message=message)
                 
             else:
-                # GENERAL - Search static SOPs using Vector DB
-                user_role = getattr(self, '_get_user_access_role', lambda: 'public')() # Safeguard if method is missing
-                security_filter = None if user_role == 'admin' else {"$or": [{"access_role": user_role}, {"access_role": "public"}]}
-                
-                docs = VECTOR_DB.similarity_search(message, k=3, filter=security_filter)
-                dynamic_context = "Information from Standard Operating Procedures (SOP):\n" + "\n\n".join([d.page_content for d in docs]) if docs else "No relevant documents found."
+                # 1. Xác định quyền của User
+                user_role = getattr(self, '_get_user_access_role', lambda: ['public'])()
+                print(f"\n--- SECURITY CHECK ---")
+                print(f"👤 User Role: {user_role}")
 
-            # --- STEP 3: BUILD CONTEXT (PROMPT & MEMORY) ---
+                # Chuẩn hóa allowed_roles thành một list
+                if user_role == 'admin':
+                    allowed_roles = 'admin' 
+                else:
+                    allowed_roles = user_role if isinstance(user_role, list) else [user_role]
+                    if 'public' not in allowed_roles:
+                        allowed_roles.append('public')
+                
+                # 2. Lấy dữ liệu từ Vector DB (Bỏ qua filter của Chroma vì nó bị lỗi trên máy bạn)
+                # Lấy nhiều kết quả (k=10) để lọc thủ công
+                docs = VECTOR_DB.similarity_search(message, k=10) 
+                
+                # 3. BỨC TƯỜNG LỬA PYTHON (Lọc thủ công từng tài liệu)
+                final_safe_docs = []
+                for i, d in enumerate(docs):
+                    doc_role = d.metadata.get('access_role', 'private')
+                    
+                    # Kiểm tra quyền
+                    if user_role == 'admin' or doc_role in allowed_roles:
+                        print(f"✅ Doc {i}: Role {doc_role} -> ALLOWED")
+                        final_safe_docs.append(d)
+                    else:
+                        print(f"❌ Doc {i}: Role {doc_role} -> BLOCKED (User {allowed_roles} cannot see this)")
+                
+                if final_safe_docs:
+                    dynamic_context = "Information from SOP:\n" + "\n\n".join([d.page_content for d in final_safe_docs])
+                else:
+                    dynamic_context = "No relevant documents found or you do not have permission to access this information."
+                print(f"----------------------\n")
+
+            # --- STEP 3: BUILD PROMPT & CALL LLM ---
             rag_system_prompt = f"""
             You are Emi, Odoo's AI Assistant. 
-            Answer the user's question based ONLY ON THE INFORMATION PROVIDED BELOW by the system.
-            If the provided information contains errors or the system reports a lack of permission, politely explain this to the user.
+            Answer the user's question based ONLY ON THE INFORMATION PROVIDED BELOW.
+            If the information is missing or permission is denied, politely say you don't have the info.
             
-            --- SYSTEM RETURNED DATA ---
+            --- SYSTEM DATA ---
             {dynamic_context}
-            -------------------------------
+            -------------------
             """
             
-            # Only get the history of the current session
-            history = self.search([
-                ('user_id', '=', self.env.user.id),
-                ('session_id', '=', session_id) 
-            ], order='create_date asc', limit=10)
-            
+            history = self.search([('user_id', '=', self.env.user.id), ('session_id', '=', session_id)], order='create_date asc', limit=10)
             messages = [{"role": "system", "content": rag_system_prompt}]
-            
             for chat in history:
-                role = "user" if chat.is_user else "assistant"
-                content = chat.message if chat.is_user else chat.response
-                messages.append({"role": role, "content": content})
-
+                messages.append({"role": "user" if chat.is_user else "assistant", "content": chat.message if chat.is_user else chat.response})
             messages.append({"role": "user", "content": message})
 
-            # --- STEP 4: CALL LM STUDIO FOR ANSWER ---
-            payload = {
-                "model": config.model_name,
-                "messages": messages,
-                "temperature": config.temperature
-            }
-            headers = {"Content-Type": "application/json"}
-            
-            # Send request to LM Studio URL (e.g., http://localhost:1234/v1/chat/completions)
+            payload = {"model": config.model_name, "messages": messages, "temperature": config.temperature}
             api_endpoint = f"{config.server_url.rstrip('/')}/chat/completions"
-            response = requests.post(api_endpoint, json=payload, headers=headers)
+            response = requests.post(api_endpoint, json=payload, timeout=10)
             
             if response.status_code == 200:
-                result_data = response.json()
-                return result_data['choices'][0]['message']['content']
+                return response.json()['choices'][0]['message']['content']
             else:
                 return f"Error from AI server: {response.text}"
 

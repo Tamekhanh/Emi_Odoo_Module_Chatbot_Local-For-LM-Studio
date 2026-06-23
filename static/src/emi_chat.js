@@ -43,7 +43,7 @@ export class EmiChat extends Component {
 
             this.state.messages.push({
                 id: Date.now() + 1,
-                message: response,
+                message: response.response,
                 is_user: false,
             });
         } catch (error) {
@@ -68,6 +68,27 @@ export class EmiChat extends Component {
             const body = this.chatBodyRef.el;
             if (body) body.scrollTop = body.scrollHeight;
         }, 100);
+    }
+
+    async clearHistory() {
+        // Xác nhận trước khi xóa để tránh bấm nhầm
+        if (!confirm("Are you sure you want to delete all chat history? This action cannot be undone.")) {
+            return;
+        }
+
+        try {
+            // 1. Gọi backend để xóa trong database
+            await this.orm.call("emi.chat", "clear_chat_history", []);
+            
+            // 2. Cập nhật state để xóa tin nhắn trên màn hình ngay lập tức
+            this.state.messages = [];
+            
+            // Thông báo thành công (tùy chọn)
+            console.log("✅ Chat history cleared successfully");
+        } catch (error) {
+            console.error("❌ Error clearing chat history:", error);
+            alert("Failed to clear chat history. Please try again.");
+        }
     }
 }
 

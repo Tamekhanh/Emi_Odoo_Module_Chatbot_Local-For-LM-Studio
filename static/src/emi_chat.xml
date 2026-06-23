@@ -3,7 +3,10 @@
     <t t-name="emi_ai_chatbot.EmiChat" owl="1">
         <div class="emi-chat-container">
             <div class="emi-chat-header">
-                <h3>🤖 Emi AI Assistant</h3>
+                <h3>Emi AI Assistant</h3>
+                <button class="btn btn-danger btn-sm" t-on-click="clearHistory">
+                    <i class="fa fa-trash"/> Clear Chat
+                </button>
             </div>
             
             <div class="emi-chat-body" t-ref="chatBody">
