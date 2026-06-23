@@ -22,3 +22,5 @@ python-dotenv
 
 # --- Optional: For Building a Simple UI ---
 streamlit
+
+requests
