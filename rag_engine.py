@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from openai import OpenAI
+import re
 
 # Cấu hình logging để theo dõi trong Docker
 logging.basicConfig(level=logging.INFO)
@@ -77,67 +78,192 @@ class RAGEngine:
         self.odoo = OdooClient()
 
     def _extract_entity(self, query, entity_type="person"):
-        """Tách tên người hoặc sản phẩm bằng LLM"""
-        prompt = f"""You are an information extraction tool. 
-        Extract the {entity_type} name or job title from the user's input. 
-        ONLY return the exact name/title, no explanations.
-        If none, return 'NOT_FOUND'.
+        """
+        Tách thực thể và MỞ RỘNG từ khóa. 
+        Yêu cầu AI cung cấp cả bản có dấu và không dấu cho tiếng Việt.
+        """
+        prompt = f"""You are a corporate terminology expert. 
+        Extract the {entity_type} name or job title from the user's input.
+        If it is a job title or a Vietnamese name, provide a comma-separated list of 
+        all possible variations (including accented and non-accented versions, 
+        English and Vietnamese equivalents).
+        
+        Example: 
+        - Input: "Salary of CEO" -> Output: "CEO, Chief Executive Officer, Giám đốc điều hành, Giam doc dieu hanh"
+        - Input: "Salary of Le Hoang Khanh" -> Output: "Le Hoang Khanh, Lê Hoàng Khánh"
+        - Input: "Salary of HR Manager" -> Output: "HR Manager, Human Resources Manager, Trưởng phòng nhân sự, Truong phong nhan su"
+        
+        If none found, return 'NOT_FOUND'.
+        ONLY return the comma-separated list, no explanations.
         
         User input: "{query}"
         Entity:"""
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
-                messages=[{"role": "system", "content": "Extract entity strictly."},
+                messages=[{"role": "system", "content": "You are a precise terminology mapper."},
                           {"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=20
+                max_tokens=100
             )
             return response.choices[0].message.content.strip().strip("'\"")
-        except Exception as e:
-            logger.error(f"Extraction Error: {e}")
+        except:
             return "NOT_FOUND"
 
     def _tool_get_salary(self, query, user_role):
-        """Truy vấn lương - CHỈ ADMIN"""
+        """Truy vấn lương: Hỗ trợ tìm cá nhân, danh sách tất cả và tìm người lương cao nhất"""
         if user_role != 'admin':
             return "⚠️ ACCESS DENIED: Only administrators can view salary information."
         
-        entity = self._extract_entity(query, "person")
-        if entity == "NOT_FOUND":
-            return "I couldn't identify the person's name or title in your question."
-
-        employees = self.odoo.search_read('hr.employee', [('name', 'ilike', entity)], ['name', 'wage'])
-        if not employees:
-            employees = self.odoo.search_read('hr.employee', [('job_id.name', 'ilike', entity)], ['name', 'wage'])
-        if not employees:
-            name_parts = entity.split()
-            if name_parts:
-                last_name = name_parts[-1]
-                employees = self.odoo.search_read('hr.employee', [('name', 'ilike', last_name)], ['name', 'wage'])
-
-        if not employees:
-            return f"Could not find any employee matching '{entity}' in the system."
+        q_lower = query.lower()
         
-        res = [f"Employee: {e['name']} | Salary: {e.get('wage', 'N/A')} VND" for e in employees]
-        return "OFFICIAL SALARY DATA:\n" + "\n".join(res)
+        # --- CASE 1: TÌM NGƯỜI LƯƠNG CAO NHẤT (Highest Salary) ---
+        if any(x in q_lower for x in ["highest", "cao nhất", "max", "maximum", "top"]):
+            # Lấy tất cả nhân viên có lương (wage > 0)
+            all_emp = self.odoo.search_read('hr.employee', [('wage', '>', 0)], ['name', 'wage', 'job_id'])
+            if not all_emp:
+                return "No salary data found in the system."
+            
+            # FIX: Explicitly convert wage to float to avoid string-sorting bugs
+            try:
+                sorted_emp = sorted(
+                    all_emp, 
+                    key=lambda x: float(x.get('wage') or 0), 
+                    reverse=True
+                )
+                top_emp = sorted_emp[0]
+            except Exception as e:
+                logger.error(f"Sorting error: {e}")
+                return "Error calculating the highest salary."
+            
+            job_data = top_emp.get('job_id')
+            job_title = job_data[1] if isinstance(job_data, tuple) else job_data
+            
+            return (f"OFFICIAL HIGHEST SALARY DATA:\n"
+                    f"Employee: {top_emp['name']} | Job: {job_title} | Salary: {top_emp['wage']} VND")
 
+        # --- CASE 2: XEM TẤT CẢ LƯƠNG (All Salaries) ---
+        if any(x in q_lower for x in ["all", "tất cả", "everyone", "danh sách lương"]):
+            all_emp = self.odoo.search_read('hr.employee', [], ['name', 'wage', 'job_id'], limit=50)
+            if not all_emp:
+                return "No employee data found."
+            
+            res_list = []
+            for e in all_emp:
+                job_data = e.get('job_id')
+                job_title = job_data[1] if isinstance(job_data, tuple) else job_data
+                res_list.append(f"- {e['name']} ({job_title}): {e.get('wage', 'N/A')} VND")
+            
+            return "OFFICIAL SALARY LIST:\n" + "\n".join(res_list)
+
+        # --- CASE 3: TÌM CÁ NHÂN (Individual - Your original logic) ---
+        entity_string = self._extract_entity(query, "person")
+        if entity_string == "NOT_FOUND":
+            return "I couldn't identify a specific person's name in your question."
+
+        variations = [v.strip() for v in entity_string.split(',')]
+        employees = []
+        
+        for var in variations:
+            # Search by Name
+            res_name = self.odoo.search_read('hr.employee', [('name', 'ilike', var)], ['name', 'wage', 'job_id'])
+            if res_name: employees.extend(res_name)
+
+            # Search by Job Title
+            res_job = self.odoo.search_read('hr.employee', [('job_id.name', 'ilike', var)], ['name', 'wage', 'job_id'])
+            if res_job: employees.extend(res_job)
+
+        if not employees:
+            return f"Could not find any employee matching '{entity_string}'."
+        
+        unique_employees = {e['id']: e for e in employees}.values()
+        res_list = []
+        for e in unique_employees:
+            job_data = e.get('job_id')
+            job_title = job_data[1] if isinstance(job_data, tuple) else job_data
+            res_list.append(f"Employee: {e['name']} | Job: {job_title} | Salary: {e.get('wage', 'N/A')} VND")
+            
+        return "OFFICIAL SALARY DATA:\n" + "\n".join(res_list)
+    
     def _tool_get_orders(self, query, user_role):
-        """Truy vấn PO, SO, Invoices - CHỈ ADMIN"""
+        """Truy vấn đơn hàng: Cải tiến Regex và xử lý tiền tố Odoo (S vs SO)"""
         if user_role != 'admin':
             return "⚠️ ACCESS DENIED: Only administrators can access financial orders."
         
-        res_text = ""
+        q_upper = query.upper()
         q_lower = query.lower()
-        if any(x in q_lower for x in ["po", "purchase", "mua"]):
-            pos = self.odoo.search_read('purchase.order', [], ['name', 'amount_total'])
-            if pos: res_text += "\nPURCHASE ORDERS:\n" + "\n".join([f"{p['name']} - {p['amount_total']} VND" for p in pos])
         
-        if any(x in q_lower for x in ["so", "sale", "bán", "receipt", "invoice", "hóa đơn"]):
-            sos = self.odoo.search_read('sale.order', [], ['name', 'amount_total'])
-            if sos: res_text += "\nSALES/INVOICE ORDERS:\n" + "\n".join([f"{s['name']} - {s['amount_total']} VND" for s in sos])
+        # 1. CẢI TIẾN REGEX: 
+        # (P\s?O?\d+) -> Khớp P1, PO1, P 1, PO 1
+        # (S\s?O?\d+) -> Khớp S1, SO1, S 1, SO 1
+        match = re.search(r'(P\s?O?\d+|S\s?O?\d+)', q_upper)
+        order_id_str = match.group(1).replace(" ", "") if match else None
+
+        # --- XỬ LÝ ĐƠN HÀNG MUA (PURCHASE ORDER) ---
+        if any(x in q_lower for x in ["po", "purchase", "mua", "đơn hàng mua"]):
+            if order_id_str and order_id_str.startswith('P'):
+                # Tìm kiếm linh hoạt: Lấy phần số để search (ví dụ PO001 -> 001)
+                numeric_id = re.sub(r'[^0-9]', '', order_id_str)
+                pos = self.odoo.search_read('purchase.order', [('name', 'ilike', numeric_id)], ['name', 'amount_total', 'partner_id', 'state'])
+                
+                if pos:
+                    p = pos[0]
+                    partner = p.get('partner_id')
+                    partner_name = partner[1] if isinstance(partner, tuple) else partner
+                    
+                    lines = self.odoo.search_read('purchase.order.line', [('order_id', '=', p['id'])], ['product_id', 'product_qty', 'price_unit'])
+                    item_list = [f"- {l.get('product_id')[1] if isinstance(l.get('product_id'), tuple) else l.get('product_id')}: {l['product_qty']} units" for l in lines]
+                    
+                    return (f"OFFICIAL PURCHASE ORDER DATA:\n"
+                            f"- Order ID: {p['name']}\n"
+                            f"- Vendor: {partner_name}\n"
+                            f"- Status: {p['state']}\n"
+                            f"- Total: {p['amount_total']} VND\n"
+                            f"Items:\n" + "\n".join(item_list))
+
+            # Fallback Purchase
+            pos_list = self.odoo.search_read('purchase.order', [], ['name', 'partner_id', 'amount_total'], limit=10)
+            if pos_list:
+                res = "\nRECENT PURCHASE ORDERS:\n"
+                for p in pos_list:
+                    partner = p.get('partner_id')
+                    p_name = partner[1] if isinstance(partner, tuple) else partner
+                    res += f"- {p['name']} | Partner: {p_name} | Total: {p['amount_total']} VND\n"
+                return res
+
+        # --- XỬ LÝ ĐƠN HÀNG BÁN (SALE ORDER) ---
+        if any(x in q_lower for x in ["so", "sale", "bán", "receipt", "invoice", "hóa đơn", "đơn hàng bán"]):
+            if order_id_str and order_id_str.startswith('S'):
+                # Xử lý đặc biệt: Odoo thường dùng 'S' thay vì 'SO'
+                numeric_id = re.sub(r'[^0-9]', '', order_id_str)
+                sos = self.odoo.search_read('sale.order', [('name', 'ilike', numeric_id)], ['name', 'amount_total', 'partner_id', 'state'])
+                
+                if sos:
+                    s = sos[0]
+                    partner = s.get('partner_id')
+                    partner_name = partner[1] if isinstance(partner, tuple) else partner
+                    
+                    lines = self.odoo.search_read('sale.order.line', [('order_id', '=', s['id'])], ['product_id', 'product_uom_qty', 'price_unit'])
+                    item_list = [f"- {l.get('product_id')[1] if isinstance(l.get('product_id'), tuple) else l.get('product_id')}: {l['product_uom_qty']} units" for l in lines]
+                    
+                    return (f"OFFICIAL SALES ORDER DATA:\n"
+                            f"- Order ID: {s['name']}\n"
+                            f"- Customer: {partner_name}\n"
+                            f"- Status: {s['state']}\n"
+                            f"- Total: {s['amount_total']} VND\n"
+                            f"Items:\n" + "\n".join(item_list))
+
+            # Fallback Sales
+            sos_list = self.odoo.search_read('sale.order', [], ['name', 'partner_id', 'amount_total'], limit=10)
+            if sos_list:
+                res = "\nRECENT SALES ORDERS:\n"
+                for s in sos_list:
+                    partner = s.get('partner_id')
+                    p_name = partner[1] if isinstance(partner, tuple) else partner
+                    res += f"- {s['name']} | Customer: {p_name} | Total: {s['amount_total']} VND\n"
+                return res
         
-        return res_text if res_text else None
+        return None
 
     def _tool_get_products(self, query):
         """Truy vấn sản phẩm"""
@@ -196,10 +322,19 @@ class RAGEngine:
     def generate_answer(self, query, user_role='public', top_k=10, temperature=0.1):
         context = self.get_safe_context(query, user_role, top_k)
         if not context or len(context) < 10:
-            return "⚠️ I'm sorry, I couldn't find any relevant information in the Odoo ERP or the Knowledge Base that you have permission to access."
+            return "⚠️ I'm sorry, I couldn't find any relevant information in the Odoo ERP or the Knowledge Base."
 
+        # Cập nhật prompt để ép AI liệt kê chi tiết
         system_prompt = f"""You are Emi, the advanced Corporate Knowledge Management System (KMS) AI.
-        Answer the question based ONLY on the provided context. 
+        Your task is to provide precise and detailed answers based ONLY on the provided context.
+        
+        GUIDELINES:
+        1. If the context contains a Sales Order or Purchase Order, you MUST list:
+           - The Customer or Vendor name.
+           - The total amount and status.
+        2. Do not summarize if detailed lists are available. Use bullet points for clarity.
+        3. If the information is not in the context, state that you don't have it.
+        
         USER ROLE: {user_role}
         CONTEXT: {context}"""
 
