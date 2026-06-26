@@ -275,20 +275,50 @@ class RAGEngine:
             
         res = [f"Product: {p['name']} | Price: {p['list_price']} VND | Stock: {p['qty_available']}" for p in products]
         return "PRODUCT DATA:\n" + "\n".join(res)
+    
+
+    def _tool_get_employee_info(self, query):
+        """Truy vấn thông tin nhân viên và chức vụ (Cho phép mọi user)"""
+        # Sử dụng hàm extract_entity đã có để lấy tên hoặc chức vụ (có dấu/không dấu)
+        entity_string = self._extract_entity(query, "person")
+        if entity_string == "NOT_FOUND":
+            return None
+
+        variations = [v.strip() for v in entity_string.split(',')]
+        employees = []
+        
+        for var in variations:
+            # Tìm theo tên
+            res_name = self.odoo.search_read('hr.employee', [('name', 'ilike', var)], ['name', 'job_id', 'department_id'])
+            if res_name: employees.extend(res_name)
+
+            # Tìm theo chức vụ (job_id.name)
+            res_job = self.odoo.search_read('hr.employee', [('job_id.name', 'ilike', var)], ['name', 'job_id', 'department_id'])
+            if res_job: employees.extend(res_job)
+
+        if not employees:
+            return None
+        
+        # Loại bỏ trùng lặp
+        unique_employees = {e['id']: e for e in employees}.values()
+        res_list = []
+        for e in unique_employees:
+            job_data = e.get('job_id')
+            job_title = job_data[1] if isinstance(job_data, tuple) else (job_data or "Unknown Position")
+            
+            dept_data = e.get('department_id')
+            dept_name = dept_data[1] if isinstance(dept_data, tuple) else (dept_data or "Unknown Department")
+            
+            res_list.append(f"Employee: {e['name']} | Position: {job_title} | Department: {dept_name}")
+            
+        return "OFFICIAL EMPLOYEE DIRECTORY:\n" + "\n".join(res_list)
 
     def get_safe_context(self, query, user_role, top_k=10):
-        """Router thông minh: Phân biệt giữa truy vấn Dữ liệu và truy vấn Tri thức"""
+        """Router thông minh: Phân biệt giữa Tri thức, Dữ liệu Nhân sự, và Dữ liệu Kinh doanh"""
         q_lower = query.lower()
         
-        # 1. Định nghĩa các từ khóa đặc trưng cho "Tri thức/Hướng dẫn/Lỗi"
+        # 1. Từ khóa Tri thức (Ưu tiên VectorDB)
         knowledge_keywords = ["bug", "error", "lỗi", "procedure", "quy trình", "how to", "cách", "hướng dẫn", "why", "tại sao", "delay", "chậm"]
-        
-        # 2. Định nghĩa các từ khóa đặc trưng cho "Dữ liệu/Số liệu"
-        data_keywords = ["list", "danh sách", "how many", "bao nhiêu", "total", "tổng", "who", "ai", "wage", "lương", "price", "giá"]
-
-        # CHIẾN THUẬT:
-        # Nếu câu hỏi chứa từ khóa "Tri thức" (ví dụ: "Bug for Receipts") 
-        # -> Ưu tiên tìm trong VectorDB trước, kể cả khi có từ "Receipts".
         if any(k in q_lower for k in knowledge_keywords):
             logger.info("Routing to: Knowledge Base (VectorDB)")
             if self.db is None: return "Knowledge base is unavailable."
@@ -297,21 +327,32 @@ class RAGEngine:
             safe_docs = [d.page_content for d in docs if d.metadata.get('access_role', 'public') in allowed_roles]
             return "\n\n".join(safe_docs[:5])
 
-        # Nếu câu hỏi chứa từ khóa "Dữ liệu" hoặc không có từ khóa tri thức -> Tìm trong Odoo
-        logger.info("Routing to: Odoo ERP (Structured Data)")
+        # 2. Dữ liệu Nhân sự (HR Data)
+        # Ưu tiên kiểm tra xem có hỏi về LƯƠNG hay không (vì lương cần quyền admin)
         if "salary" in q_lower or "lương" in q_lower:
+            logger.info("Routing to: Odoo HR (Salary - Admin Only)")
             return self._tool_get_salary(query, user_role)
             
+        # Nếu không hỏi lương, nhưng hỏi về "Ai là...", "Nhân viên...", "Chức vụ..."
+        if any(x in q_lower for x in ["who", "ai là", "employee", "nhân viên", "position", "chức vụ", "role", "vai trò"]):
+            logger.info("Routing to: Odoo HR (Employee Info)")
+            emp_info = self._tool_get_employee_info(query)
+            if emp_info: return emp_info
+
+        # 3. Dữ liệu Kinh doanh (Orders/Products)
         if any(x in q_lower for x in ["po", "so", "purchase", "sale", "đơn hàng", "receipt", "invoice", "hóa đơn"]):
+            logger.info("Routing to: Odoo Sales/Purchase")
             order_data = self._tool_get_orders(query, user_role)
             if order_data: return order_data
             
         if any(x in q_lower for x in ["product", "sản phẩm", "giá", "stock"]):
+            logger.info("Routing to: Odoo Products")
             prod_data = self._tool_get_products(query)
             if prod_data: return prod_data
         
-        # 3. Fallback cuối cùng: Nếu không khớp gì hết, cứ tìm trong VectorDB
+        # 4. Fallback cuối cùng: VectorDB
         if self.db is not None:
+            logger.info("Routing to: Fallback VectorDB")
             docs = self.db.similarity_search(query, k=top_k)
             allowed_roles = ['admin', 'hr_manager', 'it_staff', 'public'] if user_role == 'admin' else [user_role, 'public']
             safe_docs = [d.page_content for d in docs if d.metadata.get('access_role', 'public') in allowed_roles]
