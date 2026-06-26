@@ -3,6 +3,8 @@ langchain
 langchain-community
 langchain-core
 langchain-text-splitters
+langchain-huggingface
+langchain-chroma
 
 # --- Vector Database ---
 chromadb
@@ -24,3 +26,5 @@ python-dotenv
 streamlit
 
 requests
+
+torchvision

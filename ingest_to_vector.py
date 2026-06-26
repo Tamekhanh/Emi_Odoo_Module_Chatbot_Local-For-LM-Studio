@@ -74,11 +74,11 @@ def main():
     print("📦 Loading Embedding Model (all-MiniLM-L6-v2)...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    print(f"💾 Vectorizing {len(final_documents)} chunks into ./chroma_db...")
+    print(f"💾 Vectorizing {len(final_documents)} chunks into chroma_db...")
     vector_db = Chroma.from_documents(
         documents=final_documents,
         embedding=embeddings,
-        persist_directory="../chroma_db",
+        persist_directory="./chroma_db",
         collection_name="kms_collection"
     )
     print("✅ Success! Vector DB is physically stored on disk.")
