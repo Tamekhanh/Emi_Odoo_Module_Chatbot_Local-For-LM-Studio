@@ -111,7 +111,7 @@ class RAGEngine:
             return "NOT_FOUND"
 
     def _tool_get_salary(self, query, user_role):
-        """Truy vấn lương: Hỗ trợ tìm cá nhân, danh sách tất cả và tìm người lương cao nhất"""
+        """Extract salary information from Odoo HR. Only accessible by admin."""
         if user_role != 'admin':
             return "⚠️ ACCESS DENIED: Only administrators can view salary information."
         
@@ -186,16 +186,15 @@ class RAGEngine:
         return "OFFICIAL SALARY DATA:\n" + "\n".join(res_list)
     
     def _tool_get_orders(self, query, user_role):
-        """Truy vấn đơn hàng: Cải tiến Regex và xử lý tiền tố Odoo (S vs SO)"""
+        """Extract Sales or Purchase Order information from Odoo."""
         if user_role != 'admin':
             return "⚠️ ACCESS DENIED: Only administrators can access financial orders."
         
         q_upper = query.upper()
         q_lower = query.lower()
         
-        # 1. CẢI TIẾN REGEX: 
-        # (P\s?O?\d+) -> Khớp P1, PO1, P 1, PO 1
-        # (S\s?O?\d+) -> Khớp S1, SO1, S 1, SO 1
+        # (P\s?O?\d+) -> P1, PO1, P 1, PO 1
+        # (S\s?O?\d+) -> S1, SO1, S 1, SO 1
         match = re.search(r'(P\s?O?\d+|S\s?O?\d+)', q_upper)
         order_id_str = match.group(1).replace(" ", "") if match else None
 
@@ -314,11 +313,13 @@ class RAGEngine:
         return "OFFICIAL EMPLOYEE DIRECTORY:\n" + "\n".join(res_list)
 
     def get_safe_context(self, query, user_role, top_k=10):
-        """Router thông minh: Phân biệt giữa Tri thức, Dữ liệu Nhân sự, và Dữ liệu Kinh doanh"""
+        """smart routing: Search in Knowledge Base, Odoo HR, Odoo Sales/Purchase, 
+        Odoo Products based on query keywords and user role"""
         q_lower = query.lower()
         
         # 1. Từ khóa Tri thức (Ưu tiên VectorDB)
-        knowledge_keywords = ["bug", "error", "lỗi", "procedure", "quy trình", "how to", "cách", "hướng dẫn", "why", "tại sao", "delay", "chậm"]
+        knowledge_keywords = ["bug", "error", "lỗi", "procedure", "quy trình", 
+                              "how to", "cách", "hướng dẫn", "why", "tại sao", "delay", "chậm"]
         if any(k in q_lower for k in knowledge_keywords):
             logger.info("Routing to: Knowledge Base (VectorDB)")
             if self.db is None: return "Knowledge base is unavailable."
@@ -361,11 +362,11 @@ class RAGEngine:
         return None
 
     def generate_answer(self, query, user_role='public', top_k=10, temperature=0.1):
+        """Generate a response based on the query, user role, and context from Odoo and Knowledge Base."""
         context = self.get_safe_context(query, user_role, top_k)
         if not context or len(context) < 10:
             return "⚠️ I'm sorry, I couldn't find any relevant information in the Odoo ERP or the Knowledge Base."
 
-        # Cập nhật prompt để ép AI liệt kê chi tiết
         system_prompt = f"""You are Emi, the advanced Corporate Knowledge Management System (KMS) AI.
         Your task is to provide precise and detailed answers based ONLY on the provided context.
         

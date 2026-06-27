@@ -33,7 +33,7 @@ class EmiConfig(models.Model):
         help="Higher values (e.g., 0.8) make the output more creative, while lower values (e.g., 0.2) make it more focused and deterministic."
     )
     def action_sync_vector_db(self):
-        """Hàm này lấy data thẳng từ DB Odoo và nạp vào ChromaDB"""
+        """This method is called when the user clicks the "Sync Vector DB" button in the Emi Config form view. It fetches knowledge articles from the KMS module, processes them, and stores them in a vector database for AI retrieval."""
         # 1. Lấy data thẳng từ DB thông qua ORM của Odoo
         articles = self.env['kms.knowledge.article'].search([])
         
