@@ -26,6 +26,17 @@ class OdooClient:
         self.models = None
         self.connect()
 
+
+    def read_group(self, model, domain, fields, groupby):
+        """Performs aggregation (SUM, AVG, etc.) on the Odoo server side"""
+        if not self.uid or not self.models: return None
+        try:
+            # read_group is the standard Odoo way to get totals/sums
+            return self.models.execute_kw(self.db, self.uid, self.password, model, 'read_group', [domain, fields, groupby])
+        except Exception as e:
+            logger.error(f"❌ Odoo Read Group Error in model {model}: {e}")
+            return None
+
     def connect(self):
         try:
             self.common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common")
@@ -221,7 +232,7 @@ class RAGEngine:
                             f"Items:\n" + "\n".join(item_list))
 
             # Fallback Purchase
-            pos_list = self.odoo.search_read('purchase.order', [], ['name', 'partner_id', 'amount_total'], limit=10)
+            pos_list = self.odoo.search_read('purchase.order', [], ['name', 'partner_id', 'amount_total'], limit=100)
             if pos_list:
                 res = "\nRECENT PURCHASE ORDERS:\n"
                 for p in pos_list:
@@ -311,6 +322,140 @@ class RAGEngine:
             res_list.append(f"Employee: {e['name']} | Position: {job_title} | Department: {dept_name}")
             
         return "OFFICIAL EMPLOYEE DIRECTORY:\n" + "\n".join(res_list)
+    
+    def _tool_analyze_revenue(self, query, user_role):
+        """Cung cấp dữ liệu chi tiết để AI có thể phân tích doanh thu"""
+        if user_role != 'admin':
+            return "⚠️ ACCESS DENIED: Only administrators can analyze financial trends."
+
+        try:
+            # 1. Tổng doanh thu (Tổng quát)
+            total_res = self.odoo.read_group('sale.order', [('state', 'in', ['sale', 'done'])], ['amount_total:sum'], [])
+            total_revenue = total_res[0].get('amount_total', 0) if total_res else 0
+
+            # 2. Phân tích theo Khách hàng (Top 3 khách hàng đóng góp nhiều nhất)
+            # Group by partner_id, sum amount_total
+            customer_res = self.odoo.read_group(
+                'sale.order', 
+                [('state', 'in', ['sale', 'done'])], 
+                ['amount_total:sum'], 
+                ['partner_id']
+            )
+            # Sắp xếp giảm dần theo doanh thu
+            sorted_customers = sorted(customer_res, key=lambda x: x.get('amount_total', 0), reverse=True)[:3]
+            
+            customer_details = []
+            for c in sorted_customers:
+                name = c['partner_id'][1] if isinstance(c['partner_id'], tuple) else c['partner_id']
+                customer_details.append(f"- {name}: {c['amount_total']:,.2f} VND")
+
+            # 3. Phân tích theo Sản phẩm (Top 3 sản phẩm bán chạy nhất)
+            # Lưu ý: Phải query bảng sale.order.line để lấy doanh thu từng sản phẩm
+            product_res = self.odoo.read_group(
+                'sale.order.line', 
+                [('order_id.state', 'in', ['sale', 'done'])], 
+                ['price_subtotal:sum'], 
+                ['product_id']
+            )
+            sorted_products = sorted(product_res, key=lambda x: x.get('price_subtotal', 0), reverse=True)[:3]
+            
+            product_details = []
+            for p in sorted_products:
+                name = p['product_id'][1] if isinstance(p['product_id'], tuple) else p['product_id']
+                product_details.append(f"- {name}: {p['price_subtotal']:,.2f} VND")
+
+            # Tổng hợp tất cả thành một bản báo cáo chi tiết cho AI
+            analysis_report = (
+                f"DETAILED REVENUE REPORT:\n"
+                f"1. Grand Total: {total_revenue:,.2f} VND\n\n"
+                f"2. Top 3 Customers by Revenue:\n" + "\n".join(customer_details) + "\n\n"
+                f"3. Top 3 Products by Revenue:\n" + "\n".join(product_details)
+            )
+            return analysis_report
+
+        except Exception as e:
+            logger.error(f"Analysis Error: {e}")
+            return f"Error during revenue analysis: {str(e)}"
+    
+    def _tool_get_total_spending(self, query, user_role):
+        """Calculates total expenditure from confirmed Purchase Orders."""
+        # 1. Kiểm tra quyền truy cập (Chỉ Admin)
+        if user_role != 'admin':
+            return "⚠️ ACCESS DENIED: Only administrators can view total spending/expenditure data."
+
+        try:
+            # 2. Điều kiện lọc: Chỉ lấy đơn mua hàng Đã xác nhận hoặc Đã hoàn thành
+            domain = [('state', 'in', ['purchase', 'done'])]
+            
+            # 3. Yêu cầu Odoo tính tổng (SUM) trường amount_total
+            fields = ['amount_total:sum']
+            groupby = []
+
+            result = self.odoo.read_group('purchase.order', domain, fields, groupby)
+
+            if result and len(result) > 0:
+                total = result[0].get('amount_total', 0)
+                # Định dạng số cho dễ đọc (ví dụ: 1,000,000 VND)
+                formatted_total = "{:,.2f}".format(total)
+                return f"OFFICIAL TOTAL EXPENDITURE:\nConfirmed Purchase Total: {formatted_total} VND"
+            else:
+                return "No confirmed purchase records found to calculate spending."
+
+        except Exception as e:
+            logger.error(f"Spending Calculation Error: {e}")
+            return f"Error calculating total spending: {str(e)}"
+    
+
+    def _tool_get_total_revenue(self, query, user_role):
+        """Calculates total revenue from confirmed Sales Orders."""
+        # 1. Security Check
+        if user_role != 'admin':
+            return "⚠️ ACCESS DENIED: Only administrators can view total revenue data."
+
+        try:
+            # 2. Define the search criteria
+            # We only want orders that are 'sale' (Confirmed) or 'done' (Locked)
+            domain = [('state', 'in', ['sale', 'done'])]
+            
+            # We want the SUM of the 'amount_total' field
+            # Syntax: 'field_name:aggregation'
+            fields = ['amount_total:sum']
+            
+            # We group by nothing (empty list) to get one grand total for all records
+            groupby = []
+
+            result = self.odoo.read_group('sale.order', domain, fields, groupby)
+
+            if result and len(result) > 0:
+                total = result[0].get('amount_total', 0)
+                # Format the number for readability (e.g., 1,000,000 VND)
+                formatted_total = "{:,.2f}".format(total)
+                return f"OFFICIAL TOTAL REVENUE:\nConfirmed Sales Total: {formatted_total} VND"
+            else:
+                return "No confirmed sales records found to calculate revenue."
+
+        except Exception as e:
+            logger.error(f"Revenue Calculation Error: {e}")
+            return f"Error calculating total revenue: {str(e)}"
+        
+    def _tool_get_net_profit(self, query, user_role):
+        """Calculates Net Profit = Total Revenue - Total Spending"""
+        if user_role != 'admin':
+            return "⚠️ ACCESS DENIED: Only administrators can view profit data."
+        
+        # Gọi 2 hàm tool đã viết (loại bỏ phần text, chỉ lấy số)
+        # Lưu ý: Bạn nên tách logic tính số ra một hàm riêng để dễ gọi lại
+        rev_data = self.odoo.read_group('sale.order', [('state', 'in', ['sale', 'done'])], ['amount_total:sum'], [])
+        exp_data = self.odoo.read_group('purchase.order', [('state', 'in', ['purchase', 'done'])], ['amount_total:sum'], [])
+        
+        revenue = rev_data[0].get('amount_total', 0) if rev_data else 0
+        spending = exp_data[0].get('amount_total', 0) if exp_data else 0
+        profit = revenue - spending
+        
+        return (f"OFFICIAL FINANCIAL SUMMARY:\n"
+                f"- Total Revenue: {revenue:,.2f} VND\n"
+                f"- Total Spending: {spending:,.2f} VND\n"
+                f"- Net Profit: {profit:,.2f} VND")
 
     def get_safe_context(self, query, user_role, top_k=10):
         """smart routing: Search in Knowledge Base, Odoo HR, Odoo Sales/Purchase, 
@@ -341,7 +486,7 @@ class RAGEngine:
             if emp_info: return emp_info
 
         # 3. Dữ liệu Kinh doanh (Orders/Products)
-        if any(x in q_lower for x in ["po", "so", "purchase", "sale", "đơn hàng", "receipt", "invoice", "hóa đơn"]):
+        if any(x in q_lower for x in ["po", "so", "purchase order", "sale order", "đơn hàng", "receipt", "invoice", "hóa đơn"]):
             logger.info("Routing to: Odoo Sales/Purchase")
             order_data = self._tool_get_orders(query, user_role)
             if order_data: return order_data
@@ -350,6 +495,30 @@ class RAGEngine:
             logger.info("Routing to: Odoo Products")
             prod_data = self._tool_get_products(query)
             if prod_data: return prod_data
+
+        if any(x in q_lower for x in ["analyze", "phân tích", "chi tiết", "breakdown", "biểu đồ", "tăng trưởng"]):
+                if "revenue" in q_lower or "doanh thu" in q_lower:
+                    logger.info("Routing to: Odoo Detailed Revenue Analysis")
+                    return self._tool_analyze_revenue(query, user_role)
+            
+                if "spending" in q_lower or "chi tiêu" in q_lower:
+                    # Bạn có thể viết thêm _tool_analyze_spending tương tự
+                    logger.info("Routing to: Odoo Detailed Spending Analysis")
+                    return self._tool_analyze_spending(query, user_role)
+
+        # 2. Routing lấy số tổng quát (Nếu không yêu cầu phân tích)
+        if any(x in q_lower for x in ["total revenue", "total sales", "doanh thu", "tổng tiền", "thu nhập"]):
+            logger.info("Routing to: Odoo Total Revenue")
+            return self._tool_get_total_revenue(query, user_role)
+
+        # 2. NEW: Routing tới Chi tiêu (Spending)
+        if any(x in q_lower for x in ["total spending", "expenditure", "chi tiêu", "chi phí", "tổng mua", "tổng chi"]):
+            logger.info("Routing to: Odoo Spending Calculation")
+            return self._tool_get_total_spending(query, user_role)
+        
+        if any(x in q_lower for x in ["total profit", "lợi nhuận", "tổng lãi ròng", "tổng lợi nhuận", "net profit", "lãi ròng"]):
+            logger.info("Routing to: Odoo Profit Calculation")
+            return self._tool_get_net_profit(query, user_role)
         
         # 4. Fallback cuối cùng: VectorDB
         if self.db is not None:
@@ -360,6 +529,9 @@ class RAGEngine:
             return "\n\n".join(safe_docs[:5])
             
         return None
+        
+
+    
 
     def generate_answer(self, query, user_role='public', top_k=10, temperature=0.1):
         """Generate a response based on the query, user role, and context from Odoo and Knowledge Base."""
